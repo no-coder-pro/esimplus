@@ -1,3 +1,4 @@
+import os
 import math
 import re
 import json
@@ -5,105 +6,39 @@ import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
 
-import os
-import random
-import cloudscraper
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 app = Flask(__name__)
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
-_cached_online_proxies = []
-
-def get_free_online_proxies():
-    global _cached_online_proxies
-    if _cached_online_proxies:
-        return _cached_online_proxies
-    try:
-        url = 'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=3000&country=all&ssl=all&anonymity=all'
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            proxies = [line.strip() for line in r.text.splitlines() if line.strip() and ':' in line]
-            if proxies:
-                random.shuffle(proxies)
-                _cached_online_proxies = proxies
-                return proxies
-    except Exception as e:
-        print("Error fetching free online proxies:", e)
-    return []
-
-def _try_proxy_fetch(proxy_str, url, headers):
-    px = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-    r = scraper.get(url, headers=headers, proxies=px, timeout=5)
-    if r.status_code == 200:
-        t = r.text.replace('\\"', '"')
-        if 'number' in t or 'initialData' in t or 'phoneNumber' in t:
-            return t
-    raise Exception("Proxy failed")
-
-def make_esimplus_request(rsc_url, clean_url):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-    
-    # 0. Custom Environment Proxy Check
+def make_esimplus_request(clean_url):
     env_proxy = os.environ.get('PROXY_URL') or os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
-    if env_proxy:
-        px = {'http': env_proxy, 'https': env_proxy}
-        try:
-            from curl_cffi import requests as curl_requests
-            r = curl_requests.get(clean_url, headers=HEADERS, proxies=px, impersonate="chrome124", timeout=12)
-            if r.status_code == 200:
-                return r.text.replace('\\"', '"')
-        except Exception:
-            pass
+    px = {'http': env_proxy, 'https': env_proxy} if env_proxy else None
 
-        try:
-            r = scraper.get(clean_url, headers=HEADERS, proxies=px, timeout=10)
-            if r.status_code == 200:
-                return r.text.replace('\\"', '"')
-        except Exception as e:
-            print("Env proxy failed:", e)
-
-    # 1. Direct curl_cffi request (TLS impersonation)
+    # 1. TLS Impersonation via curl_cffi (Best for Cloudflare bypass & custom proxy)
     try:
         from curl_cffi import requests as curl_requests
-        r = curl_requests.get(clean_url, headers=HEADERS, impersonate="chrome124", timeout=8)
+        r = curl_requests.get(clean_url, headers=HEADERS, proxies=px, impersonate="chrome124", timeout=12)
         if r.status_code == 200:
             return r.text.replace('\\"', '"')
     except Exception:
         pass
 
-    # 2. Direct Cloudscraper request
+    # 2. Cloudscraper fallback
     try:
-        r = scraper.get(clean_url, headers=HEADERS, timeout=8)
+        import cloudscraper
+        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+        r = scraper.get(clean_url, headers=HEADERS, proxies=px, timeout=12)
         if r.status_code == 200:
             return r.text.replace('\\"', '"')
-    except Exception as e:
-        print(f"Direct request failed: {e}. Trying proxies...")
+    except Exception:
+        pass
 
-    # 2. Parallel Free Proxy Fallback
-    online_proxies = get_free_online_proxies()
-    if online_proxies:
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [
-                executor.submit(_try_proxy_fetch, p, clean_url, HEADERS)
-                for p in online_proxies[:30]
-            ]
-            for future in as_completed(futures):
-                try:
-                    res = future.result()
-                    if res:
-                        return res
-                except Exception:
-                    continue
-
-    # Fallback to direct requests if proxy pool fails
-    r = requests.get(clean_url, headers=HEADERS, timeout=10)
+    # 3. Standard requests fallback
+    r = requests.get(clean_url, headers=HEADERS, proxies=px, timeout=12)
     r.raise_for_status()
     return r.text.replace('\\"', '"')
 
@@ -209,21 +144,11 @@ def fetch_esimplus_numbers_single_page(country_slug=None, page=1):
     
     if country_slug:
         slug_clean = country_slug.lower().strip()
-        if page > 1:
-            rsc_url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}?_rsc=5xLMCj-LWS6zTP3J'
-            clean_url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}'
-        else:
-            rsc_url = f'https://esimplus.me/temporary-numbers/{slug_clean}?_rsc=5xLMCj-LWS6zTP3J'
-            clean_url = f'https://esimplus.me/temporary-numbers/{slug_clean}'
+        clean_url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}' if page > 1 else f'https://esimplus.me/temporary-numbers/{slug_clean}'
     else:
-        if page > 1:
-            rsc_url = f'https://esimplus.me/temporary-numbers/{page}?_rsc=5xLMCj-LWS6zTP3J'
-            clean_url = f'https://esimplus.me/temporary-numbers/{page}'
-        else:
-            rsc_url = f'https://esimplus.me/temporary-numbers?_rsc=5xLMCj-LWS6zTP3J'
-            clean_url = f'https://esimplus.me/temporary-numbers'
+        clean_url = f'https://esimplus.me/temporary-numbers/{page}' if page > 1 else 'https://esimplus.me/temporary-numbers'
 
-    text = make_esimplus_request(rsc_url, clean_url)
+    text = make_esimplus_request(clean_url)
 
     pattern = r'\{"number":(\{.*?\}),"title":'
     matches = re.findall(pattern, text)
@@ -307,11 +232,9 @@ def fetch_all_esimplus_numbers(country_slug=None):
 def fetch_esimplus_sms_paginated(country_slug, number_str, page=1, per_page=10):
     raw_num = str(number_str).replace('+', '').strip()
     slug = country_slug.lower().strip()
-    
-    rsc_url = f'https://esimplus.me/temporary-numbers/{slug}/{raw_num}?_rsc=5xLMCj-LWS6zTP3J'
     clean_url = f'https://esimplus.me/temporary-numbers/{slug}/{raw_num}'
     
-    text = make_esimplus_request(rsc_url, clean_url)
+    text = make_esimplus_request(clean_url)
 
     messages = []
     match = re.search(r'\"initialData\":\s*\{\s*\"data\"\s*:\s*(\[.*?\])\s*,\s*\"', text, re.DOTALL)
@@ -469,7 +392,6 @@ def get_sms_messages(country=None, number=None, page=None):
 
 if __name__ == '__main__':
     print("=====================================================")
-    print(" Starting eSIM Plus Standalone API Server at http://127.0.0.1:5000")
     print(" Endpoints:")
     print("  1. All Numbers List: http://127.0.0.1:5000/esimplus/numbers")
     print("  2. Country Numbers:  http://127.0.0.1:5000/esimplus/country/canada")
