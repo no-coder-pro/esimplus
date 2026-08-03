@@ -55,13 +55,30 @@ def make_esimplus_request(rsc_url, clean_url):
     if env_proxy:
         px = {'http': env_proxy, 'https': env_proxy}
         try:
+            from curl_cffi import requests as curl_requests
+            r = curl_requests.get(clean_url, headers=HEADERS, proxies=px, impersonate="chrome124", timeout=12)
+            if r.status_code == 200:
+                return r.text.replace('\\"', '"')
+        except Exception:
+            pass
+
+        try:
             r = scraper.get(clean_url, headers=HEADERS, proxies=px, timeout=10)
             if r.status_code == 200:
                 return r.text.replace('\\"', '"')
         except Exception as e:
             print("Env proxy failed:", e)
 
-    # 1. Direct Cloudscraper request
+    # 1. Direct curl_cffi request (TLS impersonation)
+    try:
+        from curl_cffi import requests as curl_requests
+        r = curl_requests.get(clean_url, headers=HEADERS, impersonate="chrome124", timeout=8)
+        if r.status_code == 200:
+            return r.text.replace('\\"', '"')
+    except Exception:
+        pass
+
+    # 2. Direct Cloudscraper request
     try:
         r = scraper.get(clean_url, headers=HEADERS, timeout=8)
         if r.status_code == 200:
