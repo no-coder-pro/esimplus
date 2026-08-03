@@ -5,46 +5,90 @@ import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
 
+import os
+import random
+import cloudscraper
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 app = Flask(__name__)
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Upgrade-Insecure-Requests': '1'
 }
 
-def make_esimplus_request(rsc_url, clean_url):
-    headers = dict(HEADERS)
-    headers['Rsc'] = '1'
-    try:
-        r = requests.get(rsc_url, headers=headers, timeout=15)
-        if r.status_code == 200 and 'number' in r.text:
-            return r.text
-    except Exception as e:
-        print(f"RSC request failed, falling back to clean URL: {e}")
+_cached_online_proxies = []
 
+def get_free_online_proxies():
+    global _cached_online_proxies
+    if _cached_online_proxies:
+        return _cached_online_proxies
     try:
-        r = requests.get(clean_url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        return r.text.replace('\\"', '"')
+        url = 'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=3000&country=all&ssl=all&anonymity=all'
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            proxies = [line.strip() for line in r.text.splitlines() if line.strip() and ':' in line]
+            if proxies:
+                random.shuffle(proxies)
+                _cached_online_proxies = proxies
+                return proxies
     except Exception as e:
+        print("Error fetching free online proxies:", e)
+    return []
+
+def _try_proxy_fetch(proxy_str, url, headers):
+    px = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    r = scraper.get(url, headers=headers, proxies=px, timeout=5)
+    if r.status_code == 200:
+        t = r.text.replace('\\"', '"')
+        if 'number' in t or 'initialData' in t or 'phoneNumber' in t:
+            return t
+    raise Exception("Proxy failed")
+
+def make_esimplus_request(rsc_url, clean_url):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+    
+    # 0. Custom Environment Proxy Check
+    env_proxy = os.environ.get('PROXY_URL') or os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+    if env_proxy:
+        px = {'http': env_proxy, 'https': env_proxy}
         try:
-            import cloudscraper
-            scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-            r = scraper.get(clean_url, headers=HEADERS, timeout=15)
-            r.raise_for_status()
+            r = scraper.get(clean_url, headers=HEADERS, proxies=px, timeout=10)
+            if r.status_code == 200:
+                return r.text.replace('\\"', '"')
+        except Exception as e:
+            print("Env proxy failed:", e)
+
+    # 1. Direct Cloudscraper request
+    try:
+        r = scraper.get(clean_url, headers=HEADERS, timeout=8)
+        if r.status_code == 200:
             return r.text.replace('\\"', '"')
-        except Exception as e2:
-            raise e
+    except Exception as e:
+        print(f"Direct request failed: {e}. Trying proxies...")
+
+    # 2. Parallel Free Proxy Fallback
+    online_proxies = get_free_online_proxies()
+    if online_proxies:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(_try_proxy_fetch, p, clean_url, HEADERS)
+                for p in online_proxies[:30]
+            ]
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    if res:
+                        return res
+                except Exception:
+                    continue
+
+    # Fallback to direct requests if proxy pool fails
+    r = requests.get(clean_url, headers=HEADERS, timeout=10)
+    r.raise_for_status()
+    return r.text.replace('\\"', '"')
 
 _number_country_cache = {}
 
