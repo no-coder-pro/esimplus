@@ -8,9 +8,43 @@ from flask import Flask, jsonify, request
 app = Flask(__name__)
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Rsc': '1'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Sec-Ch-Ua': '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1'
 }
+
+def make_esimplus_request(rsc_url, clean_url):
+    headers = dict(HEADERS)
+    headers['Rsc'] = '1'
+    try:
+        r = requests.get(rsc_url, headers=headers, timeout=15)
+        if r.status_code == 200 and 'number' in r.text:
+            return r.text
+    except Exception as e:
+        print(f"RSC request failed, falling back to clean URL: {e}")
+
+    try:
+        r = requests.get(clean_url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        return r.text.replace('\\"', '"')
+    except Exception as e:
+        try:
+            import cloudscraper
+            scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
+            r = scraper.get(clean_url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            return r.text.replace('\\"', '"')
+        except Exception as e2:
+            raise e
 
 _number_country_cache = {}
 
@@ -115,18 +149,20 @@ def fetch_esimplus_numbers_single_page(country_slug=None, page=1):
     if country_slug:
         slug_clean = country_slug.lower().strip()
         if page > 1:
-            url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}?_rsc=5xLMCj-LWS6zTP3J'
+            rsc_url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}?_rsc=5xLMCj-LWS6zTP3J'
+            clean_url = f'https://esimplus.me/temporary-numbers/{slug_clean}/{page}'
         else:
-            url = f'https://esimplus.me/temporary-numbers/{slug_clean}?_rsc=5xLMCj-LWS6zTP3J'
+            rsc_url = f'https://esimplus.me/temporary-numbers/{slug_clean}?_rsc=5xLMCj-LWS6zTP3J'
+            clean_url = f'https://esimplus.me/temporary-numbers/{slug_clean}'
     else:
         if page > 1:
-            url = f'https://esimplus.me/temporary-numbers/{page}?_rsc=5xLMCj-LWS6zTP3J'
+            rsc_url = f'https://esimplus.me/temporary-numbers/{page}?_rsc=5xLMCj-LWS6zTP3J'
+            clean_url = f'https://esimplus.me/temporary-numbers/{page}'
         else:
-            url = f'https://esimplus.me/temporary-numbers?_rsc=5xLMCj-LWS6zTP3J'
+            rsc_url = f'https://esimplus.me/temporary-numbers?_rsc=5xLMCj-LWS6zTP3J'
+            clean_url = f'https://esimplus.me/temporary-numbers'
 
-    response = requests.get(url, headers=HEADERS, timeout=15)
-    response.raise_for_status()
-    text = response.text
+    text = make_esimplus_request(rsc_url, clean_url)
 
     pattern = r'\{"number":(\{.*?\}),"title":'
     matches = re.findall(pattern, text)
@@ -211,11 +247,10 @@ def fetch_esimplus_sms_paginated(country_slug, number_str, page=1, per_page=10):
     raw_num = str(number_str).replace('+', '').strip()
     slug = country_slug.lower().strip()
     
-    url = f'https://esimplus.me/temporary-numbers/{slug}/{raw_num}?_rsc=5xLMCj-LWS6zTP3J'
+    rsc_url = f'https://esimplus.me/temporary-numbers/{slug}/{raw_num}?_rsc=5xLMCj-LWS6zTP3J'
+    clean_url = f'https://esimplus.me/temporary-numbers/{slug}/{raw_num}'
     
-    response = requests.get(url, headers=HEADERS, timeout=15)
-    response.raise_for_status()
-    text = response.text
+    text = make_esimplus_request(rsc_url, clean_url)
 
     messages = []
     match = re.search(r'\"initialData\":\s*\{\s*\"data\"\s*:\s*(\[.*?\])\s*,\s*\"', text, re.DOTALL)
