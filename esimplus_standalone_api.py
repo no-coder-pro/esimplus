@@ -14,9 +14,20 @@ HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
-def make_esimplus_request(clean_url):
-    env_proxy = os.environ.get('PROXY_URL') or os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
-    px = {'http': env_proxy, 'https': env_proxy} if env_proxy else None
+PROXIES = [
+    "http://pbagmqqx:lapfohxmn0fd@31.59.20.176:6754",
+    "http://pbagmqqx:lapfohxmn0fd@31.56.127.193:7684",
+    "http://pbagmqqx:lapfohxmn0fd@45.38.107.97:6014",
+    "http://pbagmqqx:lapfohxmn0fd@198.105.121.200:6462",
+    "http://pbagmqqx:lapfohxmn0fd@64.137.96.74:6641",
+    "http://pbagmqqx:lapfohxmn0fd@198.23.243.226:6361",
+    "http://pbagmqqx:lapfohxmn0fd@38.154.185.97:6370",
+    "http://pbagmqqx:lapfohxmn0fd@84.247.60.125:6095",
+    "http://pbagmqqx:lapfohxmn0fd@142.111.67.146:5611",
+]
+
+def try_request_with_proxy(clean_url, proxy_url):
+    px = {'http': proxy_url, 'https': proxy_url} if proxy_url else None
 
     # 1. TLS Impersonation via curl_cffi (Best for Cloudflare bypass & custom proxy)
     try:
@@ -41,6 +52,20 @@ def make_esimplus_request(clean_url):
     r = requests.get(clean_url, headers=HEADERS, proxies=px, timeout=12)
     r.raise_for_status()
     return r.text.replace('\\"', '"')
+
+def make_esimplus_request(clean_url):
+    env_proxy = os.environ.get('PROXY_URL') or os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+    proxy_list = [env_proxy] if env_proxy else PROXIES
+
+    last_exception = None
+    for proxy in proxy_list:
+        try:
+            return try_request_with_proxy(clean_url, proxy)
+        except Exception as e:
+            last_exception = e
+            continue
+
+    raise Exception(f"All proxies failed. Last error: {last_exception}")
 
 _number_country_cache = {}
 
